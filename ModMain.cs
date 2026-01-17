@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -6,28 +6,30 @@ using System.Threading;
 using HarmonyLib;
 using MelonLoader;
 using Steamworks;
-using TheLongDriveRadioSync;
-
+using UnityEngine;
+// Важно: подключаем пространство имен игры
+using GeneszSteamP2PBase; 
 
 namespace TheLongDriveRadioSync
 {
     public class ModMain : MelonMod
     {
-        public static sns Sns;
+        // Используем статический доступ к скрипту игры, так как sns больше нет
+        // networkingScript.s - это новый глобальный инстанс
 
         private static List<string> _audioFiles = new List<string>();
         public static List<AudioFilePacket> AudioFilesData = new List<AudioFilePacket>();
+
+        // ID нашего пакета. Используем высокое число, чтобы не конфликтовать с msgType игры
+        public const byte ModPacketID = 245; 
 
         private const int TargetSceneIndex = 1;
 
         public override void OnInitializeMelon()
         {
             var harmony = new HarmonyLib.Harmony("tld.DeltaNeverUsed.SyncRadio");
-
             harmony.PatchAll();
-
         }
-
 
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
@@ -42,11 +44,12 @@ namespace TheLongDriveRadioSync
 
         public override void OnFixedUpdate()
         {
-            if (!SteamManager.Initialized || settingsscript.s == null || !checkMedia)
+            // Проверка Steam через новый метод игры
+            if (!SteamP2PNetworkingUnderTheHoodScript.IsSteam() || settingsscript.s == null || !checkMedia)
                 return;
 
             checkMedia = false;
-            _audioFiles.Clear();  // Clear previous list to avoid duplicates
+            _audioFiles.Clear();
             AudioFilesData.Clear();
 
             var customRadioPath = settingsscript.s.S.SCustomRadioPath;
@@ -54,48 +57,46 @@ namespace TheLongDriveRadioSync
 
             try
             {
-                // Scan files in the root of the custom radio folder
-                foreach (string file in Directory.GetFiles(customRadioPath))
+                // Логика сканирования осталась прежней, она не зависит от сети
+                if (Directory.Exists(customRadioPath))
                 {
-                    if (!_audioFiles.Contains(file))
+                    foreach (string file in Directory.GetFiles(customRadioPath))
                     {
-                        _audioFiles.Add(file);
-                        string format = Path.GetExtension(file).TrimStart('.').ToUpper();
-                        MelonLogger.Msg($"Found file: {Path.GetFileName(file)} (Format: {format})");
+                        AddFile(file);
                     }
-                }
 
-                // Scan files in subdirectories of the custom radio folder
-                foreach (string directory in Directory.GetDirectories(customRadioPath, "*", SearchOption.AllDirectories))
-                {
-                    foreach (string file in Directory.GetFiles(directory))
+                    foreach (string directory in Directory.GetDirectories(customRadioPath, "*", SearchOption.AllDirectories))
                     {
-                        if (!_audioFiles.Contains(file))
+                        foreach (string file in Directory.GetFiles(directory))
                         {
-                            _audioFiles.Add(file);
-                            string format = Path.GetExtension(file).TrimStart('.').ToUpper();
-                            MelonLogger.Msg($"Found file: {Path.GetFileName(file)} (Format: {format})");
+                           AddFile(file);
                         }
                     }
                 }
 
-                // Process each found file
+                // Process files
                 foreach (var path in _audioFiles)
                 {
-                    var readData = File.ReadAllBytes(path);
-                    if (readData.Length > 33554432)
+                    try 
                     {
-                        MelonLogger.Warning($"{Path.GetFileName(path)} will not be synced automatically, file size is too big.");
-                        continue;
+                        var readData = File.ReadAllBytes(path);
+                        if (readData.Length > 33554432) // 32MB limit
+                        {
+                            MelonLogger.Warning($"{Path.GetFileName(path)} too big, skipping sync.");
+                            continue;
+                        }
+
+                        var a = new AudioFilePacket
+                        {
+                            fileName = Path.GetFileName(path),
+                            data = readData
+                        };
+                        AudioFilesData.Add(a);
                     }
-
-                    var a = new AudioFilePacket
+                    catch (Exception ex)
                     {
-                        fileName = Path.GetFileName(path),
-                        data = readData
-                    };
-
-                    AudioFilesData.Add(a);
+                         MelonLogger.Error($"Failed to read file {path}: {ex.Message}");
+                    }
                 }
             }
             catch (Exception e)
@@ -103,9 +104,20 @@ namespace TheLongDriveRadioSync
                 MelonLogger.Error("Error scanning custom radio folder: " + e.Message);
             }
         }
+
+        private void AddFile(string file)
+        {
+            if (!_audioFiles.Contains(file))
+            {
+                _audioFiles.Add(file);
+                string format = Path.GetExtension(file).TrimStart('.').ToUpper();
+                MelonLogger.Msg($"Found file: {Path.GetFileName(file)} (Format: {format})");
+            }
+        }
     }
 
-        [Serializable]
+    // Структуры данных остались без изменений
+    [Serializable]
     public struct RadioPacket
     {
         public string fileName;
@@ -133,41 +145,42 @@ namespace TheLongDriveRadioSync
         public string[] excludes;
     }
 
+    // Новый класс отправки, адаптированный под новую игру
     public static class SendP2P
     {
         public static void Send<T>(CSteamID _id, T obj)
         {
-            var data = new[] { (byte)sns.msgType.radio }.Concat(NetworkHelper.ObjectToByteArray(obj)).ToArray();
-            if (!SteamNetworking.SendP2PPacket(_id, data, (uint)data.Length, EP2PSend.k_EP2PSendReliable))
-                MelonLogger.Error("Failed to send packet");
+            // Формируем пакет: [ID Мода] + [Сериализованные данные]
+            var data = new[] { ModMain.ModPacketID }.Concat(NetworkHelper.ObjectToByteArray(obj)).ToArray();
+            
+            // Используем новый метод отправки игры. 
+            // EP2PSend.k_EP2PSendReliable гарантирует доставку
+            SteamP2PNetworkingUnderTheHoodScript.SendBytesToTarget(_id, data, EP2PSend.k_EP2PSendReliable);
         }
     }
 
-    [HarmonyPatch(typeof(sns), "RGeneralSyncMessage")]
+    // Патч на получение сообщений. Врезаемся в ProcessMessage
+    [HarmonyPatch(typeof(networkingScript), "ProcessMessage")]
     class Patch
     {
         private static Random _rand = new Random();
         public static List<CSteamID> AlreadySend = new List<CSteamID>();
-
         private static Dictionary<uint, List<PacketPart>> _recv = new Dictionary<uint, List<PacketPart>>();
 
+        // Логика отправки файла (Thread) осталась прежней
         private static void SendFile(CSteamID _id, AudioFileRequestPacket o)
         {
             foreach (var audioFile in ModMain.AudioFilesData)
             {
-                foreach (var item in o.excludes)
+                if (o.excludes != null && o.excludes.Contains(audioFile.fileName))
                 {
-                    MelonLogger.Msg("Excludes: " + item);
-                }
-                if (o.excludes.Contains(audioFile.fileName))
-                {
-                    MelonLogger.Msg("Skipping: " + audioFile.fileName);
+                    // MelonLogger.Msg("Skipping: " + audioFile.fileName);
                     continue;
                 }
 
                 MelonLogger.Msg($"Sending \"{audioFile.fileName}\" to {_id.m_SteamID}");
                 var fullAudioPacket = NetworkHelper.ObjectToByteArray(audioFile);
-                var chunkSize = 512 * 1024; // 512KB
+                var chunkSize = 400 * 1024; // Уменьшил до 400KB для надежности
                 var numChunks = (int)Math.Ceiling((double)fullAudioPacket.Length / chunkSize);
 
                 var packetId = (uint)_rand.Next();
@@ -186,125 +199,128 @@ namespace TheLongDriveRadioSync
                         pIndex = i,
                         data = data
                     };
-                    Thread.Sleep(500);
-                    MelonLogger.Msg($"Sending packet: {i}, out of {numChunks - 1}");
+                    Thread.Sleep(250); // Небольшая задержка между пакетами
+                    // MelonLogger.Msg($"Sending chunk: {i+1}/{numChunks}");
                     SendP2P.Send(_id, packet);
                 }
-
-                Thread.Sleep(2000);
+                Thread.Sleep(1000);
             }
         }
 
-        private static bool Prefix(sns __instance, CSteamID _id, byte[] _bytes, sns.msgType _type)
+        // Prefix перехватывает сообщение до того, как игра попытается его понять
+        private static bool Prefix(CSteamID _SenderID, byte[] _bytes) // Сигнатура метода изменилась в игре!
         {
-            if (_type != sns.msgType.radio)
-                return true;
-
+            // Проверяем, наш ли это пакет (по первому байту)
+            if (_bytes == null || _bytes.Length == 0 || _bytes[0] != ModMain.ModPacketID)
+                return true; // Если не наш ID (245), отдаем управление игре
 
             try
             {
+                // Пропускаем первый байт (наш ID) и десериализуем остальное
                 var obj = NetworkHelper.ByteArrayToObject(_bytes.Skip(1).ToArray());
-
                 var objType = obj.GetType();
 
+                // 1. Запрос файлов (от клиента к хосту)
                 if (objType == typeof(AudioFileRequestPacket))
                 {
-                    if (AlreadySend.Contains(_id))
-                        return false;
-                    AlreadySend.Add(_id);
+                    if (AlreadySend.Contains(_SenderID)) return false;
+                    AlreadySend.Add(_SenderID);
 
                     var o = (AudioFileRequestPacket)obj;
-                    var t = new Thread(() => SendFile(_id, o));
+                    var t = new Thread(() => SendFile(_SenderID, o));
                     t.Start();
                 }
 
+                // 2. Команда "Играть песню"
                 if (objType == typeof(RadioPacket))
                 {
                     var o = (RadioPacket)obj;
-                    if (ModMain.AudioFilesData.All(a => a.fileName != o.fileName))
-                        return false;
-
-                    MelonLogger.Msg("Playing: " + o.fileName);
-                    mainscript.M.customRadio.LoadOneSong(settingsscript.s.S.SCustomRadioPath + "/" + o.fileName);
+                    // Если файл есть у нас, играем его
+                    MelonLogger.Msg("Host says play: " + o.fileName);
+                    
+                    // ВАЖНО: Новый метод LoadOneSong принимает только путь
+                    string fullPath = settingsscript.s.S.SCustomRadioPath + "/" + o.fileName;
+                    if(mainscript.M != null && mainscript.M.customRadio != null)
+                        mainscript.M.customRadio.StartCoroutine(mainscript.M.customRadio.LoadOneSong(fullPath));
                 }
 
+                // 3. Часть файла (загрузка)
                 if (objType == typeof(PacketPart))
                 {
                     var o = (PacketPart)obj;
-                    if (_recv.ContainsKey(o.pId))
+                    if (!_recv.ContainsKey(o.pId))
                     {
-                        if (_recv[o.pId].Any(x => x.pIndex == o.pIndex))
-                            return false;
-
-
-                        _recv[o.pId].Add(o);
-                    }
-                    else
-                    {
-                        if (o.pIndex > 10)
-                            return false;
-                        _recv.Add(o.pId, new List<PacketPart> { o });
+                         // Защита от старых или странных пакетов
+                        if (o.pIndex > 20 && o.size > 200) return false; 
+                        _recv.Add(o.pId, new List<PacketPart>());
                     }
 
-
-
-                    MelonLogger.Msg($"Got Packet: {o.pId} for index: {o.pIndex} out of {o.size - 1}");
-
-
-                    if (_recv[o.pId].Count < o.size)
-                        return false;
-
-                    MelonLogger.Msg("Trying to recombine data");
-
-                    var fullPacket = _recv[o.pId].OrderBy(p => p.pIndex).ToArray();
-                    var data = new byte[0];
-
-                    for (int i = 0; i < fullPacket.Length; i++)
+                    // Проверка на дубликаты
+                    if (!_recv[o.pId].Any(x => x.pIndex == o.pIndex))
                     {
-                        data = data.Concat(fullPacket[i].data).ToArray();
+                         _recv[o.pId].Add(o);
                     }
 
-                    _recv.Remove(o.pId);
+                    // MelonLogger.Msg($"Got Chunk: {o.pIndex + 1}/{o.size}");
 
-                    try
+                    if (_recv[o.pId].Count >= o.size)
                     {
-                        obj = NetworkHelper.ByteArrayToObject(data);
-                        objType = obj.GetType();
-                        MelonLogger.Msg("Done did it");
-                    }
-                    catch (Exception e)
-                    {
-                        MelonLogger.Error("Shit: " + e);
-                    }
+                        MelonLogger.Msg("File download complete. Recombining...");
+                        var fullPacketParts = _recv[o.pId].OrderBy(p => p.pIndex).ToArray();
+                        
+                        // Собираем байты
+                        using (var ms = new MemoryStream())
+                        {
+                            foreach (var part in fullPacketParts)
+                            {
+                                ms.Write(part.data, 0, part.data.Length);
+                            }
+                            
+                            byte[] recombinedData = ms.ToArray();
+                            _recv.Remove(o.pId); // Чистим память
 
+                            try
+                            {
+                                var innerObj = NetworkHelper.ByteArrayToObject(recombinedData);
+                                if (innerObj is AudioFilePacket filePacket)
+                                {
+                                    string savePath = settingsscript.s.S.SCustomRadioPath + "/" + filePacket.fileName;
+                                    MelonLogger.Msg($"Writing file to disk: {filePacket.fileName} ({filePacket.data.Length} bytes)");
+                                    File.WriteAllBytes(savePath, filePacket.data);
+                                    
+                                    // Обновляем список локальных файлов
+                                    var newPacket = new AudioFilePacket { fileName = filePacket.fileName, data = null };
+                                    ModMain.AudioFilesData.Add(newPacket);
+                                }
+                            }
+                            catch (Exception e)
+                            {
+                                MelonLogger.Error("Recombination error: " + e);
+                            }
+                        }
+                    }
                 }
-
-                if (objType == typeof(AudioFilePacket))
-                {
-                    var o = (AudioFilePacket)obj;
-
-                    MelonLogger.Msg($"Wrote {o.fileName}, with size: {o.data.Length / 1048576}MiB to disk");
-                    File.WriteAllBytes(settingsscript.s.S.SCustomRadioPath + "/" + o.fileName, o.data);
-                }
-
             }
-            catch (Exception _)
+            catch (Exception ex)
             {
-                return true;
+                MelonLogger.Error($"Packet Error: {ex}");
             }
 
-            return false;
+            return false; // Мы обработали пакет, игре он не нужен
         }
     }
 
-    [HarmonyPatch(typeof(sns), "SAskStartStuff")]
+    // Патч на вход в лобби (клиент запрашивает файлы)
+    // Раньше было SAskStartStuff, теперь используем ClientSendOnJoin
+    [HarmonyPatch(typeof(networkingScript), "ClientSendOnJoin")]
     class PatchStart
     {
-        private static void Prefix(sns __instance)
+        private static void Postfix()
         {
-            ModMain.Sns = __instance;
-            Patch.AlreadySend = new List<CSteamID>();
-            if (__instance.lobby.isServer)
+            Patch.AlreadySend.Clear(); // Сброс списка отправленных
+
+            // Если мы хост - нам нечего просить
+            if (SteamP2PNetworkingUnderTheHoodScript.IsHost())
                 return;
 
             var requestFiles = new AudioFileRequestPacket
@@ -312,27 +328,39 @@ namespace TheLongDriveRadioSync
                 excludes = ModMain.AudioFilesData.Select(a => a.fileName).ToArray()
             };
 
-            MelonLogger.Msg("Requested audio files from host");
-            SendP2P.Send(SteamMatchmaking.GetLobbyOwner(__instance.lobby.lobbyID), requestFiles);
+            MelonLogger.Msg("Joined lobby. Requesting songs from Host...");
+            
+            // Получаем ID хоста через SteamMatchmaking
+            CSteamID hostId = SteamMatchmaking.GetLobbyOwner(networkingScript.s.hood.ConnectedLobbyID);
+            SendP2P.Send(hostId, requestFiles);
         }
     }
 
-    [HarmonyPatch(typeof(custommusicscript), "LoadOneSong", new Type[] { typeof(string), typeof(int) })]
+    // Патч на проигрывание музыки (Хост включает -> Клиенты включают)
+    // ВАЖНО: сигнатура LoadOneSong изменилась, убрали int index
+    [HarmonyPatch(typeof(custommusicscript), "LoadOneSong", new Type[] { typeof(string) })]
     class PatchRadioCustomSend
     {
-        private static void Prefix(custommusicscript __instance, string path)
+        private static void Prefix(string _path) // Аргумент теперь называется _path (см. код игры)
         {
-            if (ModMain.Sns.lobby.isServer)
+            // Только хост управляет радио
+            if (SteamP2PNetworkingUnderTheHoodScript.IsHost())
             {
-                MelonLogger.Msg("Sending radio custom packet: " + Path.GetFileName(path));
-                for (int iMember = 0; iMember < SteamMatchmaking.GetNumLobbyMembers(ModMain.Sns.lobby.lobbyID); ++iMember)
+                MelonLogger.Msg("Host playing song, syncing: " + Path.GetFileName(_path));
+                
+                var lobbyID = networkingScript.s.hood.ConnectedLobbyID;
+                int memberCount = SteamMatchmaking.GetNumLobbyMembers(lobbyID);
+
+                for (int i = 0; i < memberCount; ++i)
                 {
-                    CSteamID lobbyMemberByIndex = SteamMatchmaking.GetLobbyMemberByIndex(ModMain.Sns.lobby.lobbyID, iMember);
-                    if (lobbyMemberByIndex != SteamUser.GetSteamID())
-                        SendP2P.Send(lobbyMemberByIndex, new RadioPacket { fileName = Path.GetFileName(path) });
+                    CSteamID memberID = SteamMatchmaking.GetLobbyMemberByIndex(lobbyID, i);
+                    // Не отправляем самому себе
+                    if (memberID != SteamUser.GetSteamID())
+                    {
+                        SendP2P.Send(memberID, new RadioPacket { fileName = Path.GetFileName(_path) });
+                    }
                 }
             }
-
         }
     }
 }
