@@ -1,0 +1,35 @@
+name: Build Mod
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    # Обновил checkout до v4
+    - uses: actions/checkout@v4
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v1.1
+
+    - name: Restore NuGet packages
+      run: |
+        nuget restore TheLongDriveSyncRadio.sln
+
+    - name: Build
+      run: msbuild TheLongDriveSyncRadio.sln /p:Configuration=Release /p:Platform="Any CPU"
+
+    # ИСПРАВЛЕНИЕ: Обновил upload-artifact до v4
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: TheLongDriveSyncRadio
+        path: bin/Release/TheLongDriveSyncRadio.dll
+        # v4 требует явно указать поведение при перезаписи, 
+        # но для одного прогона это не критично.
+        if-no-files-found: error
