@@ -11,7 +11,8 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v3
+    # Обновил checkout до v4
+    - uses: actions/checkout@v4
 
     - name: Setup MSBuild
       uses: microsoft/setup-msbuild@v1.1
@@ -23,8 +24,12 @@ jobs:
     - name: Build
       run: msbuild TheLongDriveSyncRadio.sln /p:Configuration=Release /p:Platform="Any CPU"
 
+    # ИСПРАВЛЕНИЕ: Обновил upload-artifact до v4
     - name: Upload Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: TheLongDriveSyncRadio
         path: bin/Release/TheLongDriveSyncRadio.dll
+        # v4 требует явно указать поведение при перезаписи, 
+        # но для одного прогона это не критично.
+        if-no-files-found: error
