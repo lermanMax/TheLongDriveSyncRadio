@@ -38,8 +38,8 @@
     <Reference Include="Assembly-CSharp">
       <HintPath>Libs\Assembly-CSharp.dll</HintPath>
     </Reference>
-    <Reference Include="Assembly-CSharp-firstpass">
-      <HintPath>Libs\Assembly-CSharp-firstpass.dll</HintPath>
+    <Reference Include="com.rlabrecque.steamworks.net">
+      <HintPath>Libs\com.rlabrecque.steamworks.net.dll</HintPath>
     </Reference>
     <Reference Include="MelonLoader">
       <HintPath>Libs\MelonLoader.dll</HintPath>
