@@ -148,7 +148,6 @@ namespace TheLongDriveRadioSync
     [HarmonyPatch(typeof(networkingScript), "ProcessMessage")]
     class Patch
     {
-        // ИСПРАВЛЕНИЕ: Явно указываем System.Random, чтобы компилятор не путал его с Unity
         private static System.Random _rand = new System.Random();
         
         public static List<CSteamID> AlreadySend = new List<CSteamID>();
@@ -217,8 +216,9 @@ namespace TheLongDriveRadioSync
                     MelonLogger.Msg("Host says play: " + o.fileName);
                     
                     string fullPath = settingsscript.s.S.SCustomRadioPath + "/" + o.fileName;
-                    if(mainscript.M != null && mainscript.M.customRadio != null)
-                        mainscript.M.customRadio.StartCoroutine(mainscript.M.customRadio.LoadOneSong(fullPath));
+                    // ИСПРАВЛЕНИЕ: mainscript.M заменено на mainscript.s
+                    if(mainscript.s != null && mainscript.s.customRadio != null)
+                        mainscript.s.customRadio.StartCoroutine(mainscript.s.customRadio.LoadOneSong(fullPath));
                 }
 
                 if (objType == typeof(PacketPart))
