@@ -1,0 +1,30 @@
+name: Build Mod
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v1.1
+
+    - name: Restore NuGet packages
+      run: |
+        nuget restore TheLongDriveSyncRadio.sln
+
+    - name: Build
+      run: msbuild TheLongDriveSyncRadio.sln /p:Configuration=Release /p:Platform="Any CPU"
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: TheLongDriveSyncRadio
+        path: bin/Release/TheLongDriveSyncRadio.dll
