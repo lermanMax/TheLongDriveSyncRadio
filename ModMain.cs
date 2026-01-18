@@ -19,6 +19,7 @@ namespace TheLongDriveRadioSync
         // Флаг защиты от спама
         public static bool SentRequest = false;
 
+        // Наш ID. 
         public const byte ModPacketID = 245; 
 
         private const int TargetSceneIndex = 1;
@@ -32,7 +33,7 @@ namespace TheLongDriveRadioSync
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
             MelonLogger.Msg($"Scene {buildIndex} loaded: {sceneName}");
-            // Сбрасываем флаг при загрузке сцены (например, выхода в меню)
+            // Сбрасываем флаг при загрузке сцены
             SentRequest = false; 
             
             if (buildIndex == TargetSceneIndex)
@@ -45,7 +46,7 @@ namespace TheLongDriveRadioSync
 
         public override void OnFixedUpdate()
         {
-            // Если мы отключились от стима или лобби - сбрасываем флаг, чтобы в след. раз снова запросить
+            // Если соединение разорвалось - сбрасываем флаг, чтобы при реконнекте запросить снова
             if (!SteamP2PNetworkingUnderTheHoodScript.IsConnected())
             {
                 SentRequest = false;
@@ -157,6 +158,22 @@ namespace TheLongDriveRadioSync
         }
     }
 
+    // ГЛАВНОЕ ИСПРАВЛЕНИЕ: Патч на "Expected", чтобы игра не блокировала наш пакет 245
+    [HarmonyPatch(typeof(SteamP2PNetworkingUnderTheHoodScript), "Expected", new Type[] { typeof(CSteamID), typeof(msgType) })]
+    class PatchExpected
+    {
+        private static bool Prefix(CSteamID _ID, msgType _type, ref bool __result)
+        {
+            // Если тип сообщения равен нашему ID (245), принудительно говорим игре: "Это ожидаемый пакет!"
+            if ((byte)_type == ModMain.ModPacketID)
+            {
+                __result = true;
+                return false; // Пропускаем оригинальную проверку игры
+            }
+            return true; // Для всех остальных пакетов выполняем код игры
+        }
+    }
+
     [HarmonyPatch(typeof(networkingScript), "ProcessMessage")]
     class Patch
     {
@@ -176,6 +193,8 @@ namespace TheLongDriveRadioSync
 
                 MelonLogger.Msg($"Sending \"{audioFile.fileName}\" to {_id.m_SteamID}");
                 var fullAudioPacket = NetworkHelper.ObjectToByteArray(audioFile);
+                
+                // Размер чанка. 400кб - безопасно.
                 var chunkSize = 400 * 1024;
                 var numChunks = (int)Math.Ceiling((double)fullAudioPacket.Length / chunkSize);
 
@@ -195,10 +214,11 @@ namespace TheLongDriveRadioSync
                         pIndex = i,
                         data = data
                     };
-                    Thread.Sleep(250);
+                    // Задержка, чтобы не забить канал насмерть
+                    Thread.Sleep(200); 
                     SendP2P.Send(_id, packet);
                 }
-                Thread.Sleep(1000);
+                Thread.Sleep(500); // Пауза между файлами
             }
         }
 
@@ -214,16 +234,19 @@ namespace TheLongDriveRadioSync
 
                 if (objType == typeof(AudioFileRequestPacket))
                 {
+                    // Хост получил запрос на файлы
                     if (AlreadySend.Contains(_SenderID)) return false;
                     AlreadySend.Add(_SenderID);
 
                     var o = (AudioFileRequestPacket)obj;
+                    MelonLogger.Msg($"Got request for songs from {_SenderID.m_SteamID}");
                     var t = new Thread(() => SendFile(_SenderID, o));
                     t.Start();
                 }
 
                 if (objType == typeof(RadioPacket))
                 {
+                    // Клиент получил команду "Играть"
                     var o = (RadioPacket)obj;
                     MelonLogger.Msg("Host says play: " + o.fileName);
                     
@@ -234,6 +257,7 @@ namespace TheLongDriveRadioSync
 
                 if (objType == typeof(PacketPart))
                 {
+                    // Клиент получает куски файла
                     var o = (PacketPart)obj;
                     if (!_recv.ContainsKey(o.pId))
                     {
@@ -245,6 +269,9 @@ namespace TheLongDriveRadioSync
                     {
                          _recv[o.pId].Add(o);
                     }
+
+                    // Можно раскомментировать для отладки, но будет спам
+                    // MelonLogger.Msg($"Downloading... {o.pIndex + 1}/{o.size}");
 
                     if (_recv[o.pId].Count >= o.size)
                     {
@@ -296,7 +323,7 @@ namespace TheLongDriveRadioSync
     {
         private static void Postfix()
         {
-            // ЗАЩИТА ОТ СПАМА: Если уже просили - выходим
+            // ЗАЩИТА ОТ СПАМА
             if (ModMain.SentRequest) return;
 
             Patch.AlreadySend.Clear();
@@ -313,7 +340,6 @@ namespace TheLongDriveRadioSync
             CSteamID hostId = SteamMatchmaking.GetLobbyOwner(networkingScript.s.hood.ConnectedLobbyID);
             SendP2P.Send(hostId, requestFiles);
 
-            // Ставим флаг, что мы уже попросили
             ModMain.SentRequest = true;
         }
     }
