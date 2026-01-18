@@ -16,6 +16,9 @@ namespace TheLongDriveRadioSync
         private static List<string> _audioFiles = new List<string>();
         public static List<AudioFilePacket> AudioFilesData = new List<AudioFilePacket>();
 
+        // Флаг защиты от спама
+        public static bool SentRequest = false;
+
         public const byte ModPacketID = 245; 
 
         private const int TargetSceneIndex = 1;
@@ -29,6 +32,9 @@ namespace TheLongDriveRadioSync
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
             MelonLogger.Msg($"Scene {buildIndex} loaded: {sceneName}");
+            // Сбрасываем флаг при загрузке сцены (например, выхода в меню)
+            SentRequest = false; 
+            
             if (buildIndex == TargetSceneIndex)
             {
                 checkMedia = true;
@@ -39,6 +45,12 @@ namespace TheLongDriveRadioSync
 
         public override void OnFixedUpdate()
         {
+            // Если мы отключились от стима или лобби - сбрасываем флаг, чтобы в след. раз снова запросить
+            if (!SteamP2PNetworkingUnderTheHoodScript.IsConnected())
+            {
+                SentRequest = false;
+            }
+
             if (!SteamP2PNetworkingUnderTheHoodScript.IsSteam() || settingsscript.s == null || !checkMedia)
                 return;
 
@@ -216,7 +228,6 @@ namespace TheLongDriveRadioSync
                     MelonLogger.Msg("Host says play: " + o.fileName);
                     
                     string fullPath = settingsscript.s.S.SCustomRadioPath + "/" + o.fileName;
-                    // ИСПРАВЛЕНИЕ: mainscript.M заменено на mainscript.s
                     if(mainscript.s != null && mainscript.s.customRadio != null)
                         mainscript.s.customRadio.StartCoroutine(mainscript.s.customRadio.LoadOneSong(fullPath));
                 }
@@ -285,6 +296,9 @@ namespace TheLongDriveRadioSync
     {
         private static void Postfix()
         {
+            // ЗАЩИТА ОТ СПАМА: Если уже просили - выходим
+            if (ModMain.SentRequest) return;
+
             Patch.AlreadySend.Clear();
             if (SteamP2PNetworkingUnderTheHoodScript.IsHost())
                 return;
@@ -298,6 +312,9 @@ namespace TheLongDriveRadioSync
             
             CSteamID hostId = SteamMatchmaking.GetLobbyOwner(networkingScript.s.hood.ConnectedLobbyID);
             SendP2P.Send(hostId, requestFiles);
+
+            // Ставим флаг, что мы уже попросили
+            ModMain.SentRequest = true;
         }
     }
 
